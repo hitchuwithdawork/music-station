@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from './supabase'
 
-// YouTube IFrame API 로드
 function loadYouTubeAPI() {
   return new Promise((resolve) => {
     if (window.YT && window.YT.Player) { resolve(); return; }
@@ -12,7 +11,6 @@ function loadYouTubeAPI() {
   })
 }
 
-// YouTube URL에서 videoId 추출
 function extractVideoId(url) {
   const patterns = [
     /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/
@@ -37,7 +35,37 @@ export default function App() {
   const playerRef = useRef(null)
   const playerDivRef = useRef(null)
   const chatEndRef = useRef(null)
-  const isHostAction = useRef(false)  // 내가 직접 재생 명령을 내렸는지 여부
+  const isHostAction = useRef(false)
+  const handleNextSongRef = useRef(null)
+
+  // handlePlaySong 먼저 선언
+  const handlePlaySong = useCallback(async (song) => {
+    isHostAction.current = true
+    if (playerRef.current?.loadVideoById) {
+      playerRef.current.loadVideoById(song.video_id)
+    }
+    await supabase.from('room_state').update({
+      video_id: song.video_id,
+      title: song.title,
+      added_by: song.added_by,
+      updated_at: new Date().toISOString(),
+    }).eq('id', 1)
+  }, [])
+
+  // handleNextSong 선언
+  const handleNextSong = useCallback(async () => {
+    setPlaylist(prev => {
+      const idx = prev.findIndex(s => s.video_id === currentSong?.video_id)
+      const next = prev[idx + 1]
+      if (next) handlePlaySong(next)
+      return prev
+    })
+  }, [currentSong, handlePlaySong])
+
+  // ref 동기화
+  useEffect(() => {
+    handleNextSongRef.current = handleNextSong
+  }, [handleNextSong])
 
   // YouTube 플레이어 초기화
   useEffect(() => {
@@ -50,9 +78,8 @@ export default function App() {
         playerVars: { autoplay: 1, controls: 1 },
         events: {
           onStateChange: (e) => {
-            // 영상이 끝나면 다음 곡으로
             if (e.data === window.YT.PlayerState.ENDED) {
-              handleNextSong()
+              handleNextSongRef.current?.()
             }
           }
         }
@@ -64,7 +91,6 @@ export default function App() {
   useEffect(() => {
     if (!joined) return
 
-    // 플레이리스트 초기 로드 + 실시간 구독
     supabase.from('playlist').select('*').order('created_at').then(({ data }) => {
       if (data) setPlaylist(data)
     })
@@ -77,7 +103,6 @@ export default function App() {
       })
       .subscribe()
 
-    // 채팅 초기 로드 + 실시간 구독
     supabase.from('messages').select('*').order('created_at').limit(50).then(({ data }) => {
       if (data) setMessages(data)
     })
@@ -88,7 +113,6 @@ export default function App() {
       })
       .subscribe()
 
-    // 현재 재생 상태 구독 (핵심: 모든 유저 동기화)
     supabase.from('room_state').select('*').eq('id', 1).single().then(({ data }) => {
       if (data) setCurrentSong(data)
     })
@@ -97,7 +121,6 @@ export default function App() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'room_state' }, (payload) => {
         const newState = payload.new
         setCurrentSong(newState)
-        // 내가 직접 명령한 게 아닐 때만 동기화 (다른 사람이 바꾼 경우)
         if (!isHostAction.current && playerRef.current?.loadVideoById) {
           if (newState.video_id) {
             playerRef.current.loadVideoById(newState.video_id)
@@ -114,7 +137,6 @@ export default function App() {
     }
   }, [joined])
 
-  // 채팅 자동 스크롤
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
@@ -129,42 +151,22 @@ export default function App() {
     if (!videoId) { setError('올바른 YouTube URL을 입력해주세요'); return }
     setError('')
 
-    // YouTube API로 제목 가져오기 (noembed 서비스 활용)
     let title = '제목 불러오는 중...'
     try {
       const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`)
       const json = await res.json()
       title = json.title || 'Unknown'
-    } catch {}
+} catch (e) {
+      console.error('제목 조회 실패:', e)
+    }
 
     await supabase.from('playlist').insert({
       video_id: videoId,
       title,
       added_by: nickname,
     })
-
     setUrlInput('')
   }
-
-  const handlePlaySong = async (song) => {
-    isHostAction.current = true
-    if (playerRef.current?.loadVideoById) {
-      playerRef.current.loadVideoById(song.video_id)
-    }
-    // 모든 유저에게 현재 재생 상태 전파
-    await supabase.from('room_state').update({
-      video_id: song.video_id,
-      title: song.title,
-      added_by: song.added_by,
-      updated_at: new Date().toISOString(),
-    }).eq('id', 1)
-  }
-
-  const handleNextSong = useCallback(async () => {
-    const idx = playlist.findIndex(s => s.video_id === currentSong?.video_id)
-    const next = playlist[idx + 1]
-    if (next) handlePlaySong(next)
-  }, [playlist, currentSong])
 
   const handleSendChat = async () => {
     if (!chatInput.trim()) return
@@ -175,14 +177,13 @@ export default function App() {
     setChatInput('')
   }
 
-  // 입장 화면
   if (!joined) {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-10 w-full max-w-sm text-center">
           <div className="text-3xl mb-2">🎵</div>
           <h1 className="text-white text-2xl font-bold mb-1">Music Station</h1>
-          <p className="text-zinc-400 text-sm mb-8">함께 듣는 실시간 뮤직 스테이션</p>
+          <p className="text-zinc-400 text-sm mb-8">하아 원조빅파이</p>
           {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
           <input
             className="w-full bg-zinc-800 text-white rounded-lg px-4 py-3 mb-4 outline-none border border-zinc-700 focus:border-zinc-500 placeholder-zinc-500"
@@ -203,10 +204,8 @@ export default function App() {
     )
   }
 
-  // 메인 화면
   return (
     <div className="min-h-screen bg-zinc-950 text-white flex flex-col">
-      {/* 상단 헤더 */}
       <header className="border-b border-zinc-800 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-lg">🎵</span>
@@ -218,16 +217,13 @@ export default function App() {
         </div>
       </header>
 
-      {/* 메인 레이아웃 */}
       <div className="flex flex-1 overflow-hidden">
-        {/* 왼쪽: 영상 + 현재 재생 정보 */}
+        {/* 왼쪽: 영상 */}
         <div className="flex-1 flex flex-col p-4 gap-4">
-          {/* 영상 플레이어 */}
           <div className="bg-zinc-900 rounded-xl overflow-hidden" style={{ aspectRatio: '16/9' }}>
             <div ref={playerDivRef} className="w-full h-full" />
           </div>
 
-          {/* 현재 재생 중 */}
           {currentSong?.video_id && (
             <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
               <p className="text-zinc-400 text-xs mb-1">NOW PLAYING</p>
@@ -236,7 +232,6 @@ export default function App() {
             </div>
           )}
 
-          {/* URL 추가 */}
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
             <p className="text-zinc-400 text-xs mb-3">곡 추가하기</p>
             {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
@@ -260,7 +255,6 @@ export default function App() {
 
         {/* 오른쪽 패널 */}
         <div className="w-80 border-l border-zinc-800 flex flex-col">
-          {/* 플레이리스트 */}
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="px-4 py-3 border-b border-zinc-800">
               <span className="text-sm font-medium text-zinc-300">플레이리스트</span>
@@ -285,7 +279,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* 채팅 */}
           <div className="h-72 border-t border-zinc-800 flex flex-col">
             <div className="px-4 py-2 border-b border-zinc-800">
               <span className="text-sm font-medium text-zinc-300">채팅</span>
