@@ -231,7 +231,7 @@ export default function App() {
 
   const handleJoin = () => {
     if (!nickname.trim()) { setError('닉네임을 입력해주세요'); return }
-    if (nickname === 'super.admin') {
+    if (nickname.trim() === 'super.admin') {
       setShowPasswordModal(true)
       return
     }
@@ -341,7 +341,7 @@ export default function App() {
             className="w-full bg-zinc-800 text-white rounded-lg px-4 py-3 mb-4 outline-none border border-zinc-700 focus:border-zinc-500 placeholder-zinc-500"
             placeholder="닉네임 입력..."
             value={nickname}
-            onChange={e => setNickname(e.target.value)}
+            onChange={e => setNickname(e.target.value.trim())}
             onKeyDown={e => e.key === 'Enter' && handleJoin()}
             maxLength={20}
           />
