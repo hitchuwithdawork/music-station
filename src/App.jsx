@@ -23,7 +23,7 @@ function extractVideoId(url) {
   return null
 }
 
-// ─── 플레이리스트 패널 (App 밖) ───
+// ─── 플레이리스트 패널 ───
 function PlaylistPanel({ playlist, currentSong, isHost, onPlay, onDelete, onMoveUp, onMoveDown }) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -55,16 +55,16 @@ function PlaylistPanel({ playlist, currentSong, isHost, onPlay, onDelete, onMove
                   <button
                     onClick={() => onMoveUp(idx)}
                     disabled={idx === 0}
-                    className="text-zinc-400 hover:text-white disabled:opacity-20 px-1 text-xs"
+                    className="text-zinc-400 hover:text-white disabled:opacity-20 px-1 text-xs py-1"
                   >▲</button>
                   <button
                     onClick={() => onMoveDown(idx)}
                     disabled={idx === playlist.length - 1}
-                    className="text-zinc-400 hover:text-white disabled:opacity-20 px-1 text-xs"
+                    className="text-zinc-400 hover:text-white disabled:opacity-20 px-1 text-xs py-1"
                   >▼</button>
                   <button
                     onClick={() => onDelete(song.id)}
-                    className="text-red-500 hover:text-red-400 px-1 text-xs"
+                    className="text-red-500 hover:text-red-400 px-1 text-xs py-1"
                   >✕</button>
                 </div>
               )}
@@ -76,7 +76,7 @@ function PlaylistPanel({ playlist, currentSong, isHost, onPlay, onDelete, onMove
   )
 }
 
-// ─── 채팅 패널 (App 밖) ───
+// ─── 채팅 패널 ───
 function ChatPanel({ messages, chatInput, setChatInput, onSend, chatEndRef }) {
   return (
     <div className="flex flex-col h-full">
@@ -115,6 +115,9 @@ export default function App() {
   const [joined, setJoined] = useState(false)
   const [isHost, setIsHost] = useState(false)
   const [showPasswordModal, setShowPasswordModal] = useState(false)
+  const [showNicknameModal, setShowNicknameModal] = useState(false)
+  const [newNickname, setNewNickname] = useState('')
+  const [nicknameError, setNicknameError] = useState('')
   const [passwordInput, setPasswordInput] = useState('')
   const [passwordError, setPasswordError] = useState('')
   const [playlist, setPlaylist] = useState([])
@@ -179,13 +182,13 @@ export default function App() {
   useEffect(() => {
     if (!joined) return
 
-    supabase.from('playlist').select('*').order('created_at').then(({ data }) => {
+    supabase.from('playlist').select('*').order('sort_order').order('created_at').then(({ data }) => {
       if (data) setPlaylist(data)
     })
 
     const playlistSub = supabase.channel('playlist-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'playlist' }, () => {
-        supabase.from('playlist').select('*').order('created_at').then(({ data }) => {
+        supabase.from('playlist').select('*').order('sort_order').order('created_at').then(({ data }) => {
           if (data) setPlaylist(data)
         })
       })
@@ -249,10 +252,24 @@ export default function App() {
     }
   }
 
+  const handleNicknameChange = () => {
+    if (!newNickname.trim()) { setNicknameError('닉네임을 입력해주세요'); return }
+    setNickname(newNickname.trim())
+    setShowNicknameModal(false)
+    setNewNickname('')
+    setNicknameError('')
+  }
+
   const handleAddSong = async () => {
     const videoId = extractVideoId(urlInput)
     if (!videoId) { setError('올바른 YouTube URL을 입력해주세요'); return }
     setError('')
+
+    // 새 곡의 sort_order = 현재 마지막 + 1
+    const maxOrder = playlist.length > 0
+      ? Math.max(...playlist.map(s => s.sort_order ?? 0)) + 1
+      : 0
+
     let title = '제목 불러오는 중...'
     try {
       const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`)
@@ -261,36 +278,59 @@ export default function App() {
     } catch (e) {
       console.error('제목 조회 실패:', e)
     }
-    await supabase.from('playlist').insert({ video_id: videoId, title, added_by: nickname })
+
+    await supabase.from('playlist').insert({
+      video_id: videoId,
+      title,
+      added_by: nickname,
+      sort_order: maxOrder,
+    })
     setUrlInput('')
   }
 
   const handleDeleteSong = async (id) => {
-    await supabase.from('playlist').delete().eq('id', id)
+    const { error: deleteError } = await supabase.from('playlist').delete().eq('id', id)
+    if (deleteError) console.error('삭제 실패:', deleteError)
   }
 
   const handleMoveUp = async (idx) => {
     if (idx === 0) return
     const a = playlist[idx]
     const b = playlist[idx - 1]
-    const tempTime = a.created_at
-    await supabase.from('playlist').update({ created_at: b.created_at }).eq('id', a.id)
-    await supabase.from('playlist').update({ created_at: tempTime }).eq('id', b.id)
+    const orderA = a.sort_order ?? idx
+    const orderB = b.sort_order ?? idx - 1
+    await supabase.from('playlist').update({ sort_order: orderB }).eq('id', a.id)
+    await supabase.from('playlist').update({ sort_order: orderA }).eq('id', b.id)
   }
 
   const handleMoveDown = async (idx) => {
     if (idx === playlist.length - 1) return
     const a = playlist[idx]
     const b = playlist[idx + 1]
-    const tempTime = a.created_at
-    await supabase.from('playlist').update({ created_at: b.created_at }).eq('id', a.id)
-    await supabase.from('playlist').update({ created_at: tempTime }).eq('id', b.id)
+    const orderA = a.sort_order ?? idx
+    const orderB = b.sort_order ?? idx + 1
+    await supabase.from('playlist').update({ sort_order: orderB }).eq('id', a.id)
+    await supabase.from('playlist').update({ sort_order: orderA }).eq('id', b.id)
   }
 
   const handleSendChat = async () => {
     if (!chatInput.trim()) return
     await supabase.from('messages').insert({ nickname, content: chatInput })
     setChatInput('')
+  }
+
+  const panelProps = {
+    playlist, currentSong, isHost,
+    onPlay: handlePlaySong,
+    onDelete: handleDeleteSong,
+    onMoveUp: handleMoveUp,
+    onMoveDown: handleMoveDown,
+  }
+
+  const chatProps = {
+    messages, chatInput, setChatInput,
+    onSend: handleSendChat,
+    chatEndRef,
   }
 
   // 비밀번호 모달
@@ -334,8 +374,8 @@ export default function App() {
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center px-4">
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-8 w-full max-w-sm text-center">
           <img src={bonkImg} alt="bonk" className="w-full rounded-xl mb-6 object-cover" />
-          <h1 className="text-white text-2xl font-bold mb-1">세진아똥쌌니</h1>
-          <p className="text-zinc-400 text-sm mb-6">함께 듣는 실시간 뮤직 스테이션</p>
+          <h1 className="text-white text-2xl font-bold mb-1">💩세진아똥쌌니🐖</h1>
+          <p className="text-zinc-400 text-sm mb-6">구자황이랑 밥먹으면 맛있겠다아</p>
           {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
           <input
             className="w-full bg-zinc-800 text-white rounded-lg px-4 py-3 mb-4 outline-none border border-zinc-700 focus:border-zinc-500 placeholder-zinc-500"
@@ -356,22 +396,41 @@ export default function App() {
     )
   }
 
-  const panelProps = {
-    playlist, currentSong, isHost,
-    onPlay: handlePlaySong,
-    onDelete: handleDeleteSong,
-    onMoveUp: handleMoveUp,
-    onMoveDown: handleMoveDown,
-  }
-
-  const chatProps = {
-    messages, chatInput, setChatInput,
-    onSend: handleSendChat,
-    chatEndRef,
-  }
-
   return (
     <div className="min-h-screen bg-zinc-950 text-white flex flex-col">
+
+      {/* 닉네임 변경 모달 (호스트 전용) */}
+      {showNicknameModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 px-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-8 w-full max-w-sm text-center">
+            <h2 className="text-white text-lg font-bold mb-1">닉네임 변경</h2>
+            <p className="text-zinc-400 text-sm mb-6">새 닉네임을 입력하세요</p>
+            {nicknameError && <p className="text-red-400 text-sm mb-3">{nicknameError}</p>}
+            <input
+              className="w-full bg-zinc-800 text-white rounded-lg px-4 py-3 mb-4 outline-none border border-zinc-700 focus:border-zinc-500 placeholder-zinc-500"
+              placeholder="새 닉네임..."
+              value={newNickname}
+              onChange={e => setNewNickname(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleNicknameChange()}
+              autoFocus
+              maxLength={20}
+            />
+            <button
+              onClick={handleNicknameChange}
+              className="w-full bg-white text-zinc-900 font-semibold rounded-lg py-3 hover:bg-zinc-200 transition-colors mb-3"
+            >
+              변경
+            </button>
+            <button
+              onClick={() => { setShowNicknameModal(false); setNicknameError('') }}
+              className="text-zinc-500 text-sm hover:text-zinc-400"
+            >
+              취소
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 헤더 */}
       <header className="border-b border-zinc-800 px-4 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
@@ -381,7 +440,12 @@ export default function App() {
         <div className="flex items-center gap-2">
           {isHost && <span className="text-yellow-400 text-xs">👑 호스트</span>}
           <span className="w-2 h-2 bg-green-400 rounded-full"></span>
-          <span className="text-zinc-400 text-sm truncate max-w-24">{nickname}</span>
+          <button
+            onClick={() => isHost && setShowNicknameModal(true)}
+            className={`text-zinc-400 text-sm truncate max-w-24 ${isHost ? 'hover:text-white cursor-pointer underline decoration-dotted' : 'cursor-default'}`}
+          >
+            {nickname}
+          </button>
         </div>
       </header>
 
